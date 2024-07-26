@@ -14,10 +14,11 @@ func main() {
 }
 
 type IndexAndCount struct {
-	Index     int
-	Count     int
-	CountFrom int
-	Consider  bool
+	Index      int
+	Count      int
+	CountFrom  int
+	CountTo    int
+	StartCount bool
 }
 
 func fetchPaginatedResults(page, limit int) {
@@ -49,46 +50,50 @@ func fetchPaginatedResults(page, limit int) {
 	var indexesAndCountToSearch []IndexAndCount
 
 	var totalRows int
+	var countTo int
 	var offsetEnded bool
 
 	for i := range countChans {
 		for countChan := range countChans[i] {
 			if totalRows >= offset+limit {
 				totalRows += countChan.Count
-				fmt.Println("Total Rows:", totalRows, ", Canal", countChan.Index)
+				fmt.Println("Canal->", countChan.Index, "Encontrou", countChan.Count, "itens.", "TotalRows =", totalRows)
 				close(countChans[i])
 				continue
 			}
 
 			if countChan.Count > 0 {
-				consider := false
+				start := false
 				countFrom := 0
 
 				stagingSum := totalRows + countChan.Count
 
 				if stagingSum > offset {
-					consider = true
+					start = true
+					countTo += countChan.Count
 					if !offsetEnded {
 						countFrom = offset - totalRows
 						offsetEnded = true
+						fmt.Println("Canal->", countChan.Index, "Offset", offset, "atingido, contar a partir do item", countFrom)
 					}
 				}
 
 				totalRows = stagingSum
 
-				fmt.Println("Total Rows:", totalRows, ", Canal", countChan.Index)
+				fmt.Println("Canal->", countChan.Index, "Encontrou", countChan.Count, "itens.", "TotalRows =", totalRows)
 
 				indexAndCount := IndexAndCount{
-					Index:     countChan.Index,
-					Count:     countChan.Count,
-					Consider:  consider,
-					CountFrom: countFrom,
+					Index:      countChan.Index,
+					Count:      countChan.Count,
+					StartCount: start,
+					CountFrom:  countFrom,
+					CountTo:    countTo,
 				}
-				if totalRows >= offset+limit {
-					fmt.Println("Temos itens o suficiente até o canal", indexAndCount.Index, "iniciando effectiveSearch")
-					if totalRows > offset+limit {
-						indexAndCount.Count = totalRows - (offset + limit)
-					}
+
+				if countTo >= offset+limit {
+					fmt.Println("Canal->", countChan.Index, "Iniciando effectiveSearch...")
+					countTo = countTo - (offset + limit)
+					indexAndCount.CountTo = countTo
 					indexesAndCountToSearch = append(indexesAndCountToSearch, indexAndCount)
 					effectiveSearch(indexesAndCountToSearch)
 				}
@@ -102,7 +107,6 @@ func fetchPaginatedResults(page, limit int) {
 }
 
 func effectiveSearch(indexes []IndexAndCount) {
-	fmt.Print("Iniciando effective search...")
 	numGoroutines := len(indexes)
 
 	type Result struct {
@@ -116,8 +120,9 @@ func effectiveSearch(indexes []IndexAndCount) {
 	}
 
 	for i, index := range indexes {
-		if !index.Consider {
+		if !index.StartCount {
 			fmt.Println("Pulando", index.Count, "valores de", index.Count, "no canal", index.Index)
+			close(resultChans[i])
 			continue
 		}
 
@@ -126,29 +131,27 @@ func effectiveSearch(indexes []IndexAndCount) {
 				Index: index.Index,
 			}
 
-			if index.CountFrom != 0 {
-				fmt.Println("Thread: Pulando", index.CountFrom, "valores de", index.Count, "no canal", index.Index)
-			}
-
 			for x := 0; x < index.Count; x++ {
-				if x >= index.CountFrom {
-					result.Results = append(result.Results, fmt.Sprint("resultado", x, "do index", index.Index))
+				if x >= index.CountFrom && x < index.CountTo {
+					result.Results = append(result.Results, fmt.Sprint("resultado do item ", x, " do index ", index.Index))
 				}
 			}
 
 			resultChans[i] <- result
+			close(resultChans[i])
 		}(i, index)
 	}
 
-	for i := range resultChans {
-		if len(resultChans[i]) == 0 {
-			close(resultChans[i])
-		}
-
-		for result := range resultChans[i] {
-			println(result.Results)
-			close(resultChans[i])
+	var sum int
+	for _, resultChan := range resultChans {
+		for result := range resultChan {
+			for _, out := range result.Results {
+				sum += 1
+				fmt.Println(out, "audit total de itens:", sum)
+			}
 		}
 	}
 
 }
+
+//corrigir o countTo
