@@ -25,6 +25,7 @@ func fetchPaginatedResults(page, limit int) {
 	numGoroutines := 10
 	chunkSize := 1000 / numGoroutines //100
 	offset := (page - 1) * limit
+	fmt.Println("Offset:", offset, "Limit:", limit)
 
 	fmt.Println("Iniciando busca por", limit, "itens", "na pagina", page)
 
@@ -50,7 +51,8 @@ func fetchPaginatedResults(page, limit int) {
 	var indexesAndCountToSearch []IndexAndCount
 
 	var totalRows int
-	var countTo int
+	var counter int
+	var lastCounterSum int
 	var offsetEnded bool
 
 	for i := range countChans {
@@ -71,9 +73,13 @@ func fetchPaginatedResults(page, limit int) {
 
 				if stagingSum > offset {
 					start = true
-					countTo += countChan.Count
+					counter += countChan.Count
 					if !offsetEnded {
-						countFrom = offset - totalRows
+						if offset == 0 {
+							countFrom = 0
+						} else {
+							countFrom = offset - totalRows + 1
+						}
 						offsetEnded = true
 						fmt.Println("Canal->", countChan.Index, "Offset de", offset, "itens atingido, começar a contar a partir do item", countFrom)
 					}
@@ -86,16 +92,19 @@ func fetchPaginatedResults(page, limit int) {
 					Count:     countChan.Count,
 					Consider:  start,
 					CountFrom: countFrom,
-					CountTo:   countTo,
+					CountTo:   counter,
 				}
 
-				if countTo >= offset+limit {
+				if counter >= offset+limit {
 					fmt.Println("Canal->", countChan.Index, "Iniciando effectiveSearch...")
-					countTo = countTo - (offset + limit)
-					indexAndCount.CountTo = countTo
+					counter = offset + limit
+
+					counter -= lastCounterSum
+					indexAndCount.CountTo = counter
 					indexesAndCountToSearch = append(indexesAndCountToSearch, indexAndCount)
 					effectiveSearch(indexesAndCountToSearch)
 				}
+				lastCounterSum += indexAndCount.CountTo
 				indexesAndCountToSearch = append(indexesAndCountToSearch, indexAndCount)
 			}
 
