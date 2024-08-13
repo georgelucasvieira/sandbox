@@ -10,7 +10,7 @@ type Record struct {
 }
 
 func main() {
-	fetchPaginatedResults(2, 20)
+	fetchPaginatedResults(3, 10)
 }
 
 type IndexAndCount struct {
@@ -51,9 +51,13 @@ func fetchPaginatedResults(page, limit int) {
 	var indexesAndCountToSearch []IndexAndCount
 
 	var totalRows int
-	var counter int
-	var lastCounterSum int
-	var offsetEnded bool
+	var offsetAchieved bool
+	var consider bool
+
+	// var initCountFrom int
+	var lastCountSum int
+	var searchCounter int
+	var initCountFrom int
 
 	for i := range countChans {
 		for countChan := range countChans[i] {
@@ -64,50 +68,76 @@ func fetchPaginatedResults(page, limit int) {
 				continue
 			}
 
-			if countChan.Count > 0 {
-				start := false
-				countFrom := 0
-
-				stagingSum := totalRows + countChan.Count
-				fmt.Println("Canal->", countChan.Index, "Encontrou", countChan.Count, "itens.", "TotalRows =", stagingSum)
-
-				if stagingSum > offset {
-					start = true
-					counter += countChan.Count
-					if !offsetEnded {
-						if offset == 0 {
-							countFrom = 0
-						} else {
-							countFrom = offset - totalRows + 1
-						}
-						offsetEnded = true
-						fmt.Println("Canal->", countChan.Index, "Offset de", offset, "itens atingido, começar a contar a partir do item", countFrom)
-					}
-				}
-
-				totalRows = stagingSum
-
-				indexAndCount := IndexAndCount{
-					Index:     countChan.Index,
-					Count:     countChan.Count,
-					Consider:  start,
-					CountFrom: countFrom,
-					CountTo:   counter,
-				}
-
-				if counter >= offset+limit {
-					fmt.Println("Canal->", countChan.Index, "Iniciando effectiveSearch...")
-					counter = offset + limit
-
-					counter -= lastCounterSum
-					indexAndCount.CountTo = counter
-					indexesAndCountToSearch = append(indexesAndCountToSearch, indexAndCount)
-					effectiveSearch(indexesAndCountToSearch)
-				}
-				lastCounterSum += indexAndCount.CountTo
-				indexesAndCountToSearch = append(indexesAndCountToSearch, indexAndCount)
+			if countChan.Count == 0 {
+				close(countChans[i])
+				continue
 			}
 
+			if offsetAchieved {
+				lastCountSum = searchCounter
+			}
+
+			stagingSum := totalRows + countChan.Count
+			fmt.Println("Canal->", countChan.Index, "Encontrou", countChan.Count, "itens.", "TotalRows =", stagingSum)
+
+			countFrom := 0
+			if stagingSum > offset {
+				consider = true
+
+				if !offsetAchieved {
+					if offset == 0 {
+						countFrom = 0
+					} else {
+						countFrom = offset - totalRows + 1
+					}
+
+					initCountFrom = countFrom
+					offsetAchieved = true
+					searchCounter += countChan.Count - initCountFrom + 1
+					fmt.Println("Canal->", countChan.Index, "Offset de", offset, "itens atingido, começar a contar a partir do item", initCountFrom, "do Canal ->", countChan.Index)
+
+				} else {
+					searchCounter += countChan.Count - countFrom
+				}
+
+			}
+
+			totalRows = stagingSum
+
+			indexAndCount := IndexAndCount{
+				Index:     countChan.Index,
+				Count:     countChan.Count,
+				Consider:  consider,
+				CountFrom: countFrom,
+				CountTo:   countChan.Count,
+			}
+
+			if totalRows >= offset+limit {
+				fmt.Println("Canal->", countChan.Index, "Iniciando effectiveSearch...")
+				countTo := 0
+
+				if i == 0 { //ou seja, nao precisou passar do primeiro canal pra achar o máximo de resultados
+					countTo = offset + limit
+				}
+
+				if i == 1 {
+					countTo = offset + limit - initCountFrom
+				}
+
+				if i > 1 {
+					diff := offset + limit - lastCountSum
+					countTo = offset + limit - diff
+				}
+
+				indexAndCount.CountTo = countTo
+				indexesAndCountToSearch = append(indexesAndCountToSearch, indexAndCount)
+
+				fmt.Println("Canal->", countChan.Index, "Limit de", limit, "itens atingido, contar até o item", countTo, "do Canal ->", countChan.Index)
+
+				effectiveSearch(indexesAndCountToSearch)
+			}
+
+			indexesAndCountToSearch = append(indexesAndCountToSearch, indexAndCount)
 			close(countChans[i])
 		}
 	}
