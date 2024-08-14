@@ -10,7 +10,7 @@ type Record struct {
 }
 
 func main() {
-	fetchPaginatedResults(3, 10)
+	fetchPaginatedResults(2, 7)
 }
 
 type IndexAndCount struct {
@@ -54,9 +54,8 @@ func fetchPaginatedResults(page, limit int) {
 	var offsetAchieved bool
 	var consider bool
 
-	// var initCountFrom int
-	var lastCountSum int
-	var searchCounter int
+	var rightLimit int
+
 	var initCountFrom int
 
 	for i := range countChans {
@@ -73,14 +72,12 @@ func fetchPaginatedResults(page, limit int) {
 				continue
 			}
 
-			if offsetAchieved {
-				lastCountSum = searchCounter
-			}
-
 			stagingSum := totalRows + countChan.Count
 			fmt.Println("Canal->", countChan.Index, "Encontrou", countChan.Count, "itens.", "TotalRows =", stagingSum)
 
 			countFrom := 0
+
+			//left limit
 			if stagingSum > offset {
 				consider = true
 
@@ -90,14 +87,10 @@ func fetchPaginatedResults(page, limit int) {
 					} else {
 						countFrom = offset - totalRows + 1
 					}
-
 					initCountFrom = countFrom
 					offsetAchieved = true
-					searchCounter += countChan.Count - initCountFrom + 1
 					fmt.Println("Canal->", countChan.Index, "Offset de", offset, "itens atingido, começar a contar a partir do item", initCountFrom, "do Canal ->", countChan.Index)
 
-				} else {
-					searchCounter += countChan.Count - countFrom
 				}
 
 			}
@@ -112,22 +105,11 @@ func fetchPaginatedResults(page, limit int) {
 				CountTo:   countChan.Count,
 			}
 
+			//right limit
 			if totalRows >= offset+limit {
 				fmt.Println("Canal->", countChan.Index, "Iniciando effectiveSearch...")
-				countTo := 0
-
-				if i == 0 { //ou seja, nao precisou passar do primeiro canal pra achar o máximo de resultados
-					countTo = offset + limit
-				}
-
-				if i == 1 {
-					countTo = offset + limit - initCountFrom
-				}
-
-				if i > 1 {
-					diff := offset + limit - lastCountSum
-					countTo = offset + limit - diff
-				}
+				rightLimit = totalRows - (offset + limit)
+				countTo := indexAndCount.Count - rightLimit
 
 				indexAndCount.CountTo = countTo
 				indexesAndCountToSearch = append(indexesAndCountToSearch, indexAndCount)
@@ -174,7 +156,7 @@ func effectiveSearch(indexes []IndexAndCount) {
 			}
 
 			for x := 0; x < index.Count; x++ {
-				if x >= index.CountFrom && x < index.CountTo {
+				if x >= index.CountFrom && x <= index.CountTo {
 					result.Results = append(result.Results, fmt.Sprint("Resultado: { item ", x, " do canal ", index.Index, " }"))
 				}
 			}
