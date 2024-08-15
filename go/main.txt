@@ -1,0 +1,245 @@
+package main
+
+import (
+	"fmt"
+	"log"
+	"sandbox/database"
+	"time"
+
+	"github.com/joho/godotenv"
+	"gorm.io/gorm"
+)
+
+type Record struct {
+	ID   int
+	Data string
+}
+
+var timeLayout string = "2006-01-02 15:04"
+
+func main() {
+	err := godotenv.Load(".env")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = database.NewConnection()
+	if err != nil {
+		log.Panic(err)
+	}
+	milestoneInit := time.Now()
+	err = fetchPaginatedResults(50, 50)
+	if err != nil {
+		log.Panic(err)
+	}
+	milestoneEnd := time.Now()
+
+	log.Println(float64(milestoneEnd.Sub(milestoneInit)*time.Millisecond), "milliseconds")
+
+}
+
+type Search struct {
+	Index    int
+	Count    int
+	Offset   int
+	Limit    int
+	Consider bool
+	Query    *gorm.DB
+}
+
+type Credit struct {
+	Id          int       `gorm:"column=id"`
+	Name        string    `gorm:"column=name"`
+	DateCreated time.Time `gorm:"column:date_created"`
+}
+
+func (Credit) TableName() string {
+	return "credit"
+}
+
+func fetchPaginatedResults(page, limit int) error {
+	startDate, err := time.Parse(timeLayout, "2023-01-01 00:00")
+	if err != nil {
+		return err
+	}
+
+	finalDate, err := time.Parse(timeLayout, "2024-08-14 23:59")
+	if err != nil {
+		return err
+	}
+
+	numGoroutines := 5
+	chunkSize := int(finalDate.Sub(startDate).Hours()/24) / numGoroutines //Number of days by goroutine
+
+	offset := (page - 1) * limit
+	fmt.Println("Offset:", offset, "Limit:", limit)
+
+	fmt.Println("Iniciando busca por", limit, "itens", "na pagina", page)
+
+	searchChans := make([]chan Search, numGoroutines)
+	for i := range searchChans {
+		searchChans[i] = make(chan Search)
+	}
+
+	for i := 0; i < numGoroutines; i++ {
+		go func(index, days int, startDate time.Time) {
+			finalDate := startDate.AddDate(0, 0, -index*days)
+			initDate := finalDate.AddDate(0, 0, -days)
+
+			var count int64
+
+			query := database.GetDB().
+				Model(&Credit{}).
+				Order("date_created DESC").
+				Where("date_created BETWEEN ? AND ?", initDate, finalDate).
+				Count(&count)
+
+			if query.Error != nil {
+				log.Println("Chan ->", index, "Error:", query.Error)
+			}
+
+			searchChans[index] <- Search{Index: index, Count: int(count), Query: query}
+		}(i, chunkSize, finalDate)
+	}
+
+	var searchResults []Search
+
+	var totalRows int
+	var offsetAchieved bool
+	var consider bool
+
+	var rightLimit int
+
+	var initCountFrom int
+
+	for i := range searchChans {
+		for searchChan := range searchChans[i] {
+			if totalRows >= offset+limit {
+				totalRows += searchChan.Count
+				fmt.Println("Canal->", searchChan.Index, "Encontrou", searchChan.Count, "itens.", "TotalRows =", totalRows)
+				close(searchChans[i])
+				continue
+			}
+
+			if searchChan.Count == 0 {
+				close(searchChans[i])
+				continue
+			}
+
+			stagingSum := totalRows + searchChan.Count
+			fmt.Println("Canal->", searchChan.Index, "Encontrou", searchChan.Count, "itens.", "TotalRows =", stagingSum)
+
+			countFrom := 0
+
+			//left limit
+			if stagingSum > offset {
+				consider = true
+
+				if !offsetAchieved {
+					if offset == 0 {
+						countFrom = 0
+					} else {
+						countFrom = offset - totalRows + 1
+					}
+					initCountFrom = countFrom
+					offsetAchieved = true
+					fmt.Println("Canal->", searchChan.Index, "Offset de", offset, "itens atingido, começar a contar a partir do item", initCountFrom, "do Canal ->", searchChan.Index)
+
+				}
+
+			}
+
+			totalRows = stagingSum
+
+			searchResult := Search{
+				Index:    searchChan.Index,
+				Count:    searchChan.Count,
+				Consider: consider,
+				Offset:   countFrom,
+				Limit:    searchChan.Count,
+				Query:    searchChan.Query,
+			}
+
+			//right limit
+			if totalRows >= offset+limit {
+				fmt.Println("Canal->", searchChan.Index, "Iniciando effectiveSearch...")
+				rightLimit = totalRows - (offset + limit)
+				countTo := searchResult.Count - rightLimit
+
+				searchResult.Limit = countTo
+				searchResults = append(searchResults, searchResult)
+
+				fmt.Println("Canal->", searchChan.Index, "Limit de", limit, "itens atingido, contar até o item", countTo, "do Canal ->", searchChan.Index)
+
+				effectiveSearch(searchResults)
+			}
+
+			searchResults = append(searchResults, searchResult)
+			close(searchChans[i])
+		}
+	}
+	fmt.Println("finalizado!")
+	return nil
+}
+
+func effectiveSearch(searchResults []Search) {
+	numGoroutines := len(searchResults)
+
+	type Result struct {
+		Index   int
+		Credits []Credit
+	}
+
+	resultChans := make([]chan Result, numGoroutines)
+	for i := range resultChans {
+		resultChans[i] = make(chan Result)
+	}
+
+	for i, searchResult := range searchResults {
+		if !searchResult.Consider {
+			fmt.Println("Ignorando o canal", searchResult.Index, "com", searchResult.Count, "itens")
+			close(resultChans[i])
+			continue
+		}
+
+		if searchResult.Consider {
+			fmt.Println("Começando a buscar resultados a partir do item", searchResult.Offset, "do canal", searchResult.Index)
+		}
+
+		go func(i int, searchOrigin Search) {
+			result := Result{
+				Index: searchOrigin.Index,
+			}
+			offset := searchOrigin.Offset - 1
+			limit := searchOrigin.Limit - searchOrigin.Offset + 1
+			query := searchOrigin.Query.Debug().
+				Offset(offset).
+				Limit(limit).
+				Find(&result.Credits)
+
+			if query.Error != nil {
+				log.Println("Chan Results ->", i, "Error:", query.Error)
+			}
+
+			resultChans[i] <- result
+			close(resultChans[i])
+		}(i, searchResult)
+	}
+
+	var sum int
+	var credits []Credit
+	for i := range resultChans {
+		for result := range resultChans[i] {
+			for _, out := range result.Credits {
+				sum += 1
+				credits = append(credits, out)
+				fmt.Println(out, "| Total de itens ->", sum)
+			}
+		}
+	}
+
+	log.Println("rows", len(credits))
+	for _, credit := range credits {
+		log.Println(credit)
+	}
+}

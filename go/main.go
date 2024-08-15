@@ -2,6 +2,10 @@ package main
 
 import (
 	"fmt"
+	"log"
+	"sandbox/database"
+
+	"github.com/joho/godotenv"
 )
 
 type Record struct {
@@ -10,10 +14,23 @@ type Record struct {
 }
 
 func main() {
-	fetchPaginatedResults(2, 7)
+	err := godotenv.Load(".env")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = database.NewConnection()
+	if err != nil {
+		log.Panic(err)
+	}
+
+	err = fetchPaginatedResults(2, 7)
+	if err != nil {
+		log.Panic(err)
+	}
 }
 
-type IndexAndCount struct {
+type Search struct {
 	Index     int
 	Count     int
 	CountFrom int
@@ -21,7 +38,7 @@ type IndexAndCount struct {
 	Consider  bool
 }
 
-func fetchPaginatedResults(page, limit int) {
+func fetchPaginatedResults(page, limit int) error {
 	numGoroutines := 10
 	chunkSize := 1000 / numGoroutines //100
 	offset := (page - 1) * limit
@@ -29,26 +46,19 @@ func fetchPaginatedResults(page, limit int) {
 
 	fmt.Println("Iniciando busca por", limit, "itens", "na pagina", page)
 
-	type CountResult struct {
-		Index int
-		Count int
-		Start int
-		End   int
-	}
-
-	countChans := make([]chan CountResult, numGoroutines)
-	for i := range countChans {
-		countChans[i] = make(chan CountResult)
+	searchChans := make([]chan Search, numGoroutines)
+	for i := range searchChans {
+		searchChans[i] = make(chan Search)
 	}
 
 	for i := 0; i < numGoroutines; i++ {
 		go func(index, start, end int) {
 			count := end / (9 + index)
-			countChans[index] <- CountResult{Index: index, Count: int(count), Start: start, End: end}
+			searchChans[index] <- Search{Index: index, Count: int(count), CountFrom: start, CountTo: end}
 		}(i, i*chunkSize+1, (i+1)*chunkSize)
 	}
 
-	var indexesAndCountToSearch []IndexAndCount
+	var searchResults []Search
 
 	var totalRows int
 	var offsetAchieved bool
@@ -58,17 +68,17 @@ func fetchPaginatedResults(page, limit int) {
 
 	var initCountFrom int
 
-	for i := range countChans {
-		for countChan := range countChans[i] {
+	for i := range searchChans {
+		for countChan := range searchChans[i] {
 			if totalRows >= offset+limit {
 				totalRows += countChan.Count
 				fmt.Println("Canal->", countChan.Index, "Encontrou", countChan.Count, "itens.", "TotalRows =", totalRows)
-				close(countChans[i])
+				close(searchChans[i])
 				continue
 			}
 
 			if countChan.Count == 0 {
-				close(countChans[i])
+				close(searchChans[i])
 				continue
 			}
 
@@ -97,7 +107,7 @@ func fetchPaginatedResults(page, limit int) {
 
 			totalRows = stagingSum
 
-			indexAndCount := IndexAndCount{
+			searchResult := Search{
 				Index:     countChan.Index,
 				Count:     countChan.Count,
 				Consider:  consider,
@@ -109,24 +119,25 @@ func fetchPaginatedResults(page, limit int) {
 			if totalRows >= offset+limit {
 				fmt.Println("Canal->", countChan.Index, "Iniciando effectiveSearch...")
 				rightLimit = totalRows - (offset + limit)
-				countTo := indexAndCount.Count - rightLimit
+				countTo := searchResult.Count - rightLimit
 
-				indexAndCount.CountTo = countTo
-				indexesAndCountToSearch = append(indexesAndCountToSearch, indexAndCount)
+				searchResult.CountTo = countTo
+				searchResults = append(searchResults, searchResult)
 
 				fmt.Println("Canal->", countChan.Index, "Limit de", limit, "itens atingido, contar até o item", countTo, "do Canal ->", countChan.Index)
 
-				effectiveSearch(indexesAndCountToSearch)
+				effectiveSearch(searchResults)
 			}
 
-			indexesAndCountToSearch = append(indexesAndCountToSearch, indexAndCount)
-			close(countChans[i])
+			searchResults = append(searchResults, searchResult)
+			close(searchChans[i])
 		}
 	}
 	fmt.Println("finalizado!")
+	return nil
 }
 
-func effectiveSearch(indexes []IndexAndCount) {
+func effectiveSearch(indexes []Search) {
 	numGoroutines := len(indexes)
 
 	type Result struct {
@@ -150,7 +161,7 @@ func effectiveSearch(indexes []IndexAndCount) {
 			fmt.Println("Começando a buscar resultados a partir do item", index.CountFrom, "do canal", index.Index)
 		}
 
-		go func(i int, index IndexAndCount) {
+		go func(i int, index Search) {
 			result := Result{
 				Index: index.Index,
 			}
@@ -177,5 +188,3 @@ func effectiveSearch(indexes []IndexAndCount) {
 	}
 
 }
-
-//corrigir o countTo
